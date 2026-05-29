@@ -10,9 +10,11 @@
 <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Bricolage+Grotesque:opsz,wght@12..96,400;12..96,600&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="./css/styles.css">
 
-<!-- ffmpeg.wasm (single-thread core, UMD) loaded from CDN. Sets window.FFmpegWASM / window.FFmpegUtil.
+<!-- ffmpeg.wasm (single-thread core, UMD) loaded from CDN. Sets window.FFmpegWASM (the FFmpeg class).
      Single-thread core needs no SharedArrayBuffer, so this works on plain GitHub Pages.
-     If jsdelivr is unreachable/blocked, onerror retries the same file+version from unpkg. -->
+     If jsdelivr is unreachable/blocked, onerror retries the same file+version from unpkg.
+     We do NOT load @ffmpeg/util — its UMD global build is broken (calls require()/exports and
+     throws in the browser). render.js inlines the one helper we used (toBlobURL). -->
 <script>
   function ffmpegCdnFallback(el){
     var s = document.createElement('script');
@@ -20,7 +22,6 @@
     document.head.appendChild(s);
   }
 </script>
-<script src="https://cdn.jsdelivr.net/npm/@ffmpeg/util@0.12.2/dist/umd/index.js" onerror="ffmpegCdnFallback(this)"></script>
 <script src="https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.15/dist/umd/ffmpeg.js" onerror="ffmpegCdnFallback(this)"></script>
 </head>
 <body>
@@ -92,7 +93,7 @@
   </aside>
 </div>
 
-<footer class="build-version" id="buildVersion">build 5 · 2026-05-29 · ffmpeg-cdn-fallback</footer>
+<footer class="build-version" id="buildVersion">build 6 · 2026-05-29 · drop-broken-ffmpeg-util</footer>
 
 <script type="module" src="./js/app.js"></script>
 </body>

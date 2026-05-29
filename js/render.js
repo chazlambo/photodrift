@@ -14,21 +14,31 @@ let cancelFlag = false;
 
 export function cancelRender(){ cancelFlag = true; }
 
-// The UMD <script> tags set window.FFmpegWASM / window.FFmpegUtil. If jsdelivr is
+// The UMD <script> tag sets window.FFmpegWASM (the FFmpeg class). If jsdelivr is
 // blocked, index.html's onerror retries from unpkg — which may still be in flight
 // when the user clicks export, so poll briefly before giving up.
+//
+// NOTE: we deliberately do NOT use @ffmpeg/util. Its UMD bundle is mis-built — the
+// browser-global branch runs a CommonJS factory that calls require()/exports, so it
+// throws at runtime and never sets window.FFmpegUtil. We only needed toBlobURL,
+// which is the few lines below.
 async function waitForGlobals(timeoutMs = 8000){
   const start = performance.now();
-  while (!(window.FFmpegWASM && window.FFmpegUtil)){
+  while (!window.FFmpegWASM){
     if (performance.now() - start > timeoutMs){
-      const missing = [
-        window.FFmpegWASM ? null : 'FFmpegWASM (@ffmpeg/ffmpeg)',
-        window.FFmpegUtil ? null : 'FFmpegUtil (@ffmpeg/util)',
-      ].filter(Boolean).join(' and ');
-      throw new Error(`ffmpeg.wasm script didn't load: ${missing} missing. A network/extension may be blocking the CDN (jsdelivr & unpkg).`);
+      throw new Error(`ffmpeg.wasm script didn't load: FFmpegWASM (@ffmpeg/ffmpeg) missing. A network/extension may be blocking the CDN (jsdelivr & unpkg).`);
     }
     await new Promise(r => setTimeout(r, 100));
   }
+}
+
+// Fetch a URL and hand it back as a same-origin blob: URL (what @ffmpeg/util's
+// toBlobURL did). ffmpeg.load needs blob URLs so its worker can import them.
+async function toBlobURL(url, mimeType){
+  const resp = await fetch(url);
+  if (!resp.ok) throw new Error(`HTTP ${resp.status} fetching ${url}`);
+  const buf = await resp.arrayBuffer();
+  return URL.createObjectURL(new Blob([buf], { type: mimeType }));
 }
 
 function canvasToJpeg(canvas, quality){
@@ -41,7 +51,6 @@ async function loadFFmpeg(onLog){
   if (ffmpeg && ffmpeg.loaded) return ffmpeg;
   await waitForGlobals();
   const { FFmpeg } = window.FFmpegWASM;
-  const { toBlobURL } = window.FFmpegUtil;
   ffmpeg = new FFmpeg();
   if (onLog) ffmpeg.on('log', ({ message }) => onLog(message));
 
