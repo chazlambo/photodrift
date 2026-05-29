@@ -84,7 +84,10 @@ export async function renderMP4(params, getSet, onProgress){
   // estimate length the same way the UI does, plus a safety tail
   const n = getSet().length;
   const estimate = (n / Math.max(1,P.density)) * P.timeOn + P.timeOn;
-  const maxFrames = Math.ceil(estimate * 1.5 * fps);
+  // +timeOn covers the staggered black-screen lead-in (photos drop in over
+  // ~timeOn at the start). The frame loop still breaks early on allDone(), so
+  // this larger cap only matters as a safety net — it never wastes frames.
+  const maxFrames = Math.ceil((estimate + P.timeOn) * 1.5 * fps);
 
   const ff = await loadFFmpeg();
   onProgress(0.02, 'Preparing…');

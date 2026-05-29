@@ -73,10 +73,16 @@ export class Simulation {
     this.seqPtr = 0;
     this.particles = [];
     const n = Math.max(1, Math.round(this.P.density));
+    const interval = this.P.timeOn / n;            // steady-state entry cadence
     for (let i=0;i<n;i++){
       const p = {};
       this.particles.push(p);
-      this._spawn(p, true);
+      // Live preview (infinite) seeds photos already mid-screen so it isn't
+      // blank on load. Export (finite) opens on black and lets the first photos
+      // DROP IN from above — staggered so they enter in turn and each gets its
+      // full time on screen, instead of starting half-way down.
+      this._spawn(p, !this.finite);
+      if (this.finite) p.y -= p.speed * interval * i;
     }
   }
 
