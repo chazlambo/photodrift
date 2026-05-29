@@ -4,58 +4,37 @@ import { Simulation } from './sim.js';
 // Single-thread core: no SharedArrayBuffer / cross-origin-isolation needed,
 // so this works on plain static hosting (GitHub Pages). Swap to core-mt + a
 // COOP/COEP service worker for ~2-4x faster encodes (see README).
+// Single-thread core: no SharedArrayBuffer / cross-origin-isolation needed,
+// so this works on plain static hosting (GitHub Pages). The ~30 MB core stays on
+// a CDN (jsdelivr → unpkg fallback). The worker that imports it is vendored
+// locally (see below), so it's same-origin and can importScripts these CDN URLs
+// over CORS (jsdelivr/unpkg both send Access-Control-Allow-Origin: *).
 const CORE_BASES = [
   'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.10/dist/umd',
-  'https://unpkg.com/@ffmpeg/core@0.12.10/dist/umd', // fallback if jsdelivr is blocked
+  'https://unpkg.com/@ffmpeg/core@0.12.10/dist/umd',
 ];
-// The @ffmpeg/ffmpeg worker chunk lives in the ffmpeg package, not the core.
-const FFMPEG_BASES = [
-  'https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.15/dist/umd',
-  'https://unpkg.com/@ffmpeg/ffmpeg@0.12.15/dist/umd',
-];
-const WORKER_FILE = '814.ffmpeg.js'; // webpack chunk id — pinned to @ffmpeg/ffmpeg 0.12.15
 
 let ffmpeg = null;
 let cancelFlag = false;
 
 export function cancelRender(){ cancelFlag = true; }
 
-// The UMD <script> tag sets window.FFmpegWASM (the FFmpeg class). If jsdelivr is
-// blocked, index.html's onerror retries from unpkg — which may still be in flight
-// when the user clicks export, so poll briefly before giving up.
-//
-// NOTE: we deliberately do NOT use @ffmpeg/util. Its UMD bundle is mis-built — the
-// browser-global branch runs a CommonJS factory that calls require()/exports, so it
-// throws at runtime and never sets window.FFmpegUtil. We only needed toBlobURL,
-// which is the few lines below.
+// vendor/ffmpeg/ffmpeg.js (loaded by index.html) sets window.FFmpegWASM.
+// We host @ffmpeg/ffmpeg's tiny shim + worker chunk ourselves on purpose:
+//  - the FFmpeg class spawns its worker (814.ffmpeg.js) relative to where ffmpeg.js
+//    loaded from; from a CDN that's a cross-origin Worker, which browsers forbid.
+//    Vendored, the worker is same-origin and Just Works — no blob/classWorkerURL.
+//  - we also avoid @ffmpeg/util entirely: its UMD bundle is mis-built (runs a
+//    CommonJS require()/exports factory in the browser branch and throws), so it
+//    never sets window.FFmpegUtil.
 async function waitForGlobals(timeoutMs = 8000){
   const start = performance.now();
   while (!window.FFmpegWASM){
     if (performance.now() - start > timeoutMs){
-      throw new Error(`ffmpeg.wasm script didn't load: FFmpegWASM (@ffmpeg/ffmpeg) missing. A network/extension may be blocking the CDN (jsdelivr & unpkg).`);
+      throw new Error('ffmpeg.wasm didn\'t load: window.FFmpegWASM missing (vendor/ffmpeg/ffmpeg.js failed to load).');
     }
     await new Promise(r => setTimeout(r, 100));
   }
-}
-
-// Fetch a URL and hand it back as a same-origin blob: URL (what @ffmpeg/util's
-// toBlobURL did). ffmpeg.load needs blob URLs so its worker can import them, and
-// a blob: worker URL also dodges the "can't construct Worker cross-origin" error.
-async function toBlobURL(url, mimeType){
-  const resp = await fetch(url);
-  if (!resp.ok) throw new Error(`HTTP ${resp.status} fetching ${url}`);
-  const buf = await resp.arrayBuffer();
-  return URL.createObjectURL(new Blob([buf], { type: mimeType }));
-}
-
-// Try each CDN base in turn; return the first successful blob URL.
-async function blobFromCdns(bases, file, mimeType){
-  let lastErr;
-  for (const base of bases){
-    try { return await toBlobURL(`${base}/${file}`, mimeType); }
-    catch (e){ lastErr = e; }
-  }
-  throw lastErr;
 }
 
 function canvasToJpeg(canvas, quality){
@@ -68,22 +47,26 @@ async function loadFFmpeg(onLog){
   if (ffmpeg && ffmpeg.loaded) return ffmpeg;
   await waitForGlobals();
   const { FFmpeg } = window.FFmpegWASM;
-  ffmpeg = new FFmpeg();
-  if (onLog) ffmpeg.on('log', ({ message }) => onLog(message));
 
-  // Fetch everything as same-origin blob URLs. classWorkerURL is essential: the
-  // FFmpeg class otherwise spawns its worker straight from the CDN, and browsers
-  // refuse to construct a Worker from a cross-origin URL. A blob: URL is same-origin.
-  let classWorkerURL, coreURL, wasmURL;
-  try {
-    classWorkerURL = await blobFromCdns(FFMPEG_BASES, WORKER_FILE, 'text/javascript');
-    coreURL = await blobFromCdns(CORE_BASES, 'ffmpeg-core.js', 'text/javascript');
-    wasmURL = await blobFromCdns(CORE_BASES, 'ffmpeg-core.wasm', 'application/wasm');
-  } catch (e){
-    throw new Error(`Couldn't download the ffmpeg engine from any CDN: ${e?.message || e}`);
+  // Try each CDN base in turn. A fresh FFmpeg instance per attempt so a failed
+  // load doesn't leave a half-dead worker behind.
+  let lastErr;
+  for (const base of CORE_BASES){
+    const inst = new FFmpeg();
+    if (onLog) inst.on('log', ({ message }) => onLog(message));
+    try {
+      await inst.load({
+        coreURL: `${base}/ffmpeg-core.js`,
+        wasmURL: `${base}/ffmpeg-core.wasm`,
+      });
+      ffmpeg = inst;
+      return ffmpeg;
+    } catch (e){
+      lastErr = e;
+      try { inst.terminate?.(); } catch { /* ignore */ }
+    }
   }
-  await ffmpeg.load({ classWorkerURL, coreURL, wasmURL });
-  return ffmpeg;
+  throw new Error(`Couldn't load the ffmpeg core from any CDN: ${lastErr?.message || lastErr}`);
 }
 
 /**
