@@ -42,6 +42,9 @@ export const CONTROLS = [
   { group: 'Background' },
   { id: 'bg',       key: 'bg',       label: 'Background colour', type: 'color' },
   { id: 'vignette', key: 'vignette', label: 'Vignette',          type: 'toggle' },
+
+  { group: 'Export' },
+  { id: 'fps', key: 'fps', label: 'Frame rate', min: 15, max: 60, step: 1, fmt: v => Math.round(v) + ' fps' },
 ];
 
 // Placeholder tiles shown before any photos are loaded.
