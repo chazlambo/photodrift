@@ -1,5 +1,10 @@
 import { LOGW, LOGH } from './config.js';
 
+// Placement avoids letting any photo stay covered by more than this fraction of
+// its area for much of its time on screen. Lower = stricter (photos kept clearer),
+// but with big photos + high density there may be no fully-clear spot to find.
+const COVER_HEAVY = 0.6;
+
 // Small seedable RNG so an export is reproducible.
 function mulberry32(a){
   return function(){
@@ -87,26 +92,56 @@ export class Simulation {
 
   _rand(a,b){ return a + this.rng()*(b-a); }
 
-  // best-candidate placement: try a few spots, keep the one clearest of others
-  _choosePos(self,w,h,randomY){
+  // How much would a candidate photo (at cx,cy, size w×h, moving at vNew) be
+  // entangled with the photos already on screen, projected over its whole descent?
+  // Returns a cost in ~[0,1.3]: 0 = stays clear, higher = heavily/persistently
+  // overlapping some other photo. Because motion is deterministic (constant speed,
+  // fixed x), we can just march time forward and measure the overlap.
+  _overlapCost(self, cx, cy, w, h, vNew){
+    const SAMPLES = 16;
+    const HEAVY = COVER_HEAVY;                 // overlap fraction we call "covered"
+    const T = (LOGH + h) / Math.max(1, vNew);  // seconds until this photo exits
+    let worst = 0;
+    for (const o of this.particles){
+      if (o === self || o.dead || o.w === undefined) continue;
+      // x never changes, so horizontal overlap is constant — if none, they can
+      // never cover each other, no matter the timing.
+      const ox = Math.min(cx + w, o.x + o.w) - Math.max(cx, o.x);
+      if (ox <= 0) continue;
+      const minArea = Math.min(w * h, o.w * o.h);
+      let heavyHits = 0, sumFrac = 0;
+      for (let s = 0; s < SAMPLES; s++){
+        const t = T * s / (SAMPLES - 1);
+        const ny = cy + vNew * t;
+        const oy = o.y + o.speed * t;
+        const oy2 = Math.min(ny + h, oy + o.h) - Math.max(ny, oy); // vertical overlap
+        if (oy2 <= 0) continue;
+        const frac = (ox * oy2) / minArea;     // fraction of the smaller photo hidden
+        sumFrac += frac;
+        if (frac > HEAVY) heavyHits++;
+      }
+      // mostly: time-fraction spent heavily covered; plus a nudge toward generally
+      // clearer spots via the average overlap.
+      const cost = heavyHits / SAMPLES + 0.3 * (sumFrac / SAMPLES);
+      if (cost > worst) worst = cost;
+    }
+    return worst;
+  }
+
+  // best-candidate placement: try several spots, keep the one that stays clearest
+  // of the other photos across its entire travel (not just at spawn time).
+  _choosePos(self,w,h,randomY,vNew){
     const P = this.P;
     const margin = LOGW*(1 - P.spread/100)/2;
     const xlo = Math.min(margin, LOGW - w - margin);
     const xhi = Math.max(margin, LOGW - w - margin);
-    let best = null, bestScore = -Infinity;
-    for (let i=0;i<14;i++){
+    let best = null, bestCost = Infinity;
+    for (let i=0;i<28;i++){
       const cx = this._rand(xlo, xhi);
       const cy = randomY ? this._rand(-h*0.5, LOGH - h*0.3) : -h - this._rand(0, h*0.4);
-      let score = Infinity;
-      for (const o of this.particles){
-        if (o === self || o.dead || o.w === undefined) continue;
-        const hgap = Math.max(o.x-(cx+w), cx-(o.x+o.w));
-        const vgap = Math.max(o.y-(cy+h), cy-(o.y+o.h));
-        const g = (hgap>=0||vgap>=0) ? Math.max(hgap,vgap) : hgap+vgap;
-        if (g < score) score = g;
-      }
-      score += this._rand(0, LOGW*0.025);
-      if (score > bestScore){ bestScore = score; best = { x:cx, y:cy }; }
+      // small random tiebreak so equally-clear spots still vary naturally
+      const cost = this._overlapCost(self, cx, cy, w, h, vNew) + this._rand(0, 0.02);
+      if (cost < bestCost){ bestCost = cost; best = { x:cx, y:cy }; }
     }
     return best || { x:this._rand(xlo,xhi), y: randomY ? this._rand(0,LOGH) : -h };
   }
@@ -122,11 +157,11 @@ export class Simulation {
     const lo = Math.min(P.minSize, P.maxSize), hi = Math.max(P.minSize, P.maxSize);
     const h = LOGH * ((lo + (hi-lo)*d) / 100);
     const w = h * aspect;
-    p.item = item; p.idx = idx; p.w = w; p.h = h; p.d = d; p.dead = false;
-    const pos = this._choosePos(p, w, h, randomY);
-    p.x = pos.x; p.y = pos.y;
     const travel = LOGH + h;
-    p.speed = (travel / P.timeOn) * (1 + (d-0.5)*1.6*P.depth);
+    const speed = (travel / P.timeOn) * (1 + (d-0.5)*1.6*P.depth);
+    p.item = item; p.idx = idx; p.w = w; p.h = h; p.d = d; p.dead = false; p.speed = speed;
+    const pos = this._choosePos(p, w, h, randomY, speed);   // needs speed to project travel
+    p.x = pos.x; p.y = pos.y;
     p.opacityBase = P.imgOpacity / 100;
     p.tilt = P.tilt ? this._rand(-P.tilt, P.tilt) : 0;
   }
