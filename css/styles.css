@@ -52,6 +52,7 @@ body{
   background:rgba(7,7,8,.82);backdrop-filter:blur(6px);
   display:flex;align-items:center;justify-content:center;
 }
+.render-overlay[hidden]{display:none}
 .render-overlay-inner{text-align:center;width:min(70%,420px)}
 .ro-label{font-family:"Instrument Serif",serif;font-size:28px;color:var(--ink)}
 .ro-bar{height:5px;border-radius:5px;background:var(--panel-edge);margin:16px 0 10px;overflow:hidden}
