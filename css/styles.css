@@ -10,6 +10,11 @@
 }
 *{box-sizing:border-box;margin:0;padding:0}
 html,body{height:100%}
+.build-version{
+  position:fixed;right:8px;bottom:6px;z-index:50;pointer-events:none;
+  font-family:"DM Mono",monospace;font-size:10px;letter-spacing:.04em;
+  color:var(--ink-dim);opacity:.5;
+}
 body{
   background:var(--bg);
   color:var(--ink);
