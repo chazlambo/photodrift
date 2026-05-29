@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Photodrift — drifting photo backdrops</title>
+<meta name="description" content="Turn a folder of photos into a slow, parallax 'drifting' video backdrop — perfect for end credits or ambient screens. Runs entirely in your browser; nothing is uploaded.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Bricolage+Grotesque:opsz,wght@12..96,400;12..96,600&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="./css/styles.css">
+
+<!-- ffmpeg.wasm (single-thread core, UMD) loaded from CDN. Sets window.FFmpegWASM / window.FFmpegUtil.
+     Single-thread core needs no SharedArrayBuffer, so this works on plain GitHub Pages. -->
+<script src="https://cdn.jsdelivr.net/npm/@ffmpeg/util@0.12.2/dist/umd/index.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.15/dist/umd/index.js"></script>
+</head>
+<body>
+<div class="app" id="app">
+  <div class="stage-wrap" id="stageWrap">
+    <div class="stage-frame" id="frame">
+      <canvas id="stage" width="1920" height="1080"></canvas>
+      <div class="render-overlay" id="renderOverlay" hidden>
+        <div class="render-overlay-inner">
+          <div class="ro-label" id="roLabel">Rendering…</div>
+          <div class="ro-bar"><div class="ro-fill" id="roFill"></div></div>
+          <div class="ro-pct" id="roPct">0%</div>
+          <button class="ro-cancel" id="roCancel">Cancel</button>
+        </div>
+      </div>
+    </div>
+    <div class="stage-toolbar">
+      <button class="tbtn" id="playBtn" title="Play / Pause">
+        <svg id="playIcon" viewBox="0 0 24 24"><path d="M6 5h4v14H6zM14 5h4v14h-4z"/></svg>
+      </button>
+      <button class="tbtn" id="restartBtn" title="Restart">
+        <svg viewBox="0 0 24 24"><path d="M12 5V1L7 6l5 5V7a5 5 0 1 1-5 5H5a7 7 0 1 0 7-7z"/></svg>
+      </button>
+      <button class="tbtn" id="presentBtn" title="Presentation mode (hide UI)">
+        <svg viewBox="0 0 24 24"><path d="M3 5h18v14H3zM5 7v10h14V7z"/></svg>
+      </button>
+      <div class="readout">on screen <b id="liveCount">0</b> · <b id="imgCount">0</b> imgs</div>
+    </div>
+  </div>
+
+  <aside class="panel">
+    <div class="panel-head">
+      <h1>Photo<em>drift</em></h1>
+      <p>Load photos, tune the drift, export a clean MP4. Everything runs in your browser — nothing is uploaded.</p>
+    </div>
+
+    <div class="drop" id="drop">
+      <strong>Drop photos here</strong>
+      <span>or click to choose — placeholders until then</span>
+      <input type="file" id="fileInput" accept="image/*" multiple hidden>
+    </div>
+
+    <div class="thumbs-wrap" id="thumbsWrap" hidden>
+      <div class="thumbs-head">
+        <span class="seg-label">Order — drag to rearrange</span>
+        <div class="seg" id="orderSeg">
+          <button data-order="ordered" class="active">In order</button>
+          <button data-order="shuffle">Shuffle</button>
+        </div>
+      </div>
+      <div class="thumbs" id="thumbs"></div>
+    </div>
+
+    <div class="duration-box">
+      <div class="lab">Estimated video length</div>
+      <div class="big" id="durBig">—</div>
+      <div class="sub" id="durSub">each photo shown once</div>
+      <button id="renderBtn" class="renderbtn">● Export MP4</button>
+      <div class="render-note" id="renderNote">renders frame-by-frame in your browser</div>
+      <a id="dlLink" class="dl-link" hidden download="photodrift.mp4">Download again ↓</a>
+    </div>
+
+    <div class="controls" id="controls"><!-- sliders injected by app.js --></div>
+
+    <div class="hint">
+      <b>Tip:</b> press <b>Space</b> to play/pause and the screen icon for a clean full-frame view.
+      First export downloads the ~25&nbsp;MB ffmpeg engine, then encodes locally.
+    </div>
+  </aside>
+</div>
+
+<script type="module" src="./js/app.js"></script>
+</body>
+</html>
