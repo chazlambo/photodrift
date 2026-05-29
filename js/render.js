@@ -8,6 +8,12 @@ const CORE_BASES = [
   'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.10/dist/umd',
   'https://unpkg.com/@ffmpeg/core@0.12.10/dist/umd', // fallback if jsdelivr is blocked
 ];
+// The @ffmpeg/ffmpeg worker chunk lives in the ffmpeg package, not the core.
+const FFMPEG_BASES = [
+  'https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.15/dist/umd',
+  'https://unpkg.com/@ffmpeg/ffmpeg@0.12.15/dist/umd',
+];
+const WORKER_FILE = '814.ffmpeg.js'; // webpack chunk id — pinned to @ffmpeg/ffmpeg 0.12.15
 
 let ffmpeg = null;
 let cancelFlag = false;
@@ -33,12 +39,23 @@ async function waitForGlobals(timeoutMs = 8000){
 }
 
 // Fetch a URL and hand it back as a same-origin blob: URL (what @ffmpeg/util's
-// toBlobURL did). ffmpeg.load needs blob URLs so its worker can import them.
+// toBlobURL did). ffmpeg.load needs blob URLs so its worker can import them, and
+// a blob: worker URL also dodges the "can't construct Worker cross-origin" error.
 async function toBlobURL(url, mimeType){
   const resp = await fetch(url);
   if (!resp.ok) throw new Error(`HTTP ${resp.status} fetching ${url}`);
   const buf = await resp.arrayBuffer();
   return URL.createObjectURL(new Blob([buf], { type: mimeType }));
+}
+
+// Try each CDN base in turn; return the first successful blob URL.
+async function blobFromCdns(bases, file, mimeType){
+  let lastErr;
+  for (const base of bases){
+    try { return await toBlobURL(`${base}/${file}`, mimeType); }
+    catch (e){ lastErr = e; }
+  }
+  throw lastErr;
 }
 
 function canvasToJpeg(canvas, quality){
@@ -54,18 +71,19 @@ async function loadFFmpeg(onLog){
   ffmpeg = new FFmpeg();
   if (onLog) ffmpeg.on('log', ({ message }) => onLog(message));
 
-  // Download the ~25 MB core, trying each CDN in turn.
-  let lastErr;
-  for (const base of CORE_BASES){
-    try {
-      await ffmpeg.load({
-        coreURL: await toBlobURL(`${base}/ffmpeg-core.js`, 'text/javascript'),
-        wasmURL: await toBlobURL(`${base}/ffmpeg-core.wasm`, 'application/wasm'),
-      });
-      return ffmpeg;
-    } catch (e){ lastErr = e; }
+  // Fetch everything as same-origin blob URLs. classWorkerURL is essential: the
+  // FFmpeg class otherwise spawns its worker straight from the CDN, and browsers
+  // refuse to construct a Worker from a cross-origin URL. A blob: URL is same-origin.
+  let classWorkerURL, coreURL, wasmURL;
+  try {
+    classWorkerURL = await blobFromCdns(FFMPEG_BASES, WORKER_FILE, 'text/javascript');
+    coreURL = await blobFromCdns(CORE_BASES, 'ffmpeg-core.js', 'text/javascript');
+    wasmURL = await blobFromCdns(CORE_BASES, 'ffmpeg-core.wasm', 'application/wasm');
+  } catch (e){
+    throw new Error(`Couldn't download the ffmpeg engine from any CDN: ${e?.message || e}`);
   }
-  throw new Error(`Couldn't download the ffmpeg core from any CDN: ${lastErr?.message || lastErr}`);
+  await ffmpeg.load({ classWorkerURL, coreURL, wasmURL });
+  return ffmpeg;
 }
 
 /**
