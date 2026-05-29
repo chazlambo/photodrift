@@ -23,10 +23,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-      - name: Stamp build version
-        run: |
-          VER="$(git rev-parse --short HEAD) · $(date -u +'%Y-%m-%d %H:%MZ')"
-          sed -i "s|__BUILD_VERSION__|$VER|g" index.html
       - name: Setup Pages
         uses: actions/configure-pages@v5
       - name: Upload site

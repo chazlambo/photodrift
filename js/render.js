@@ -4,12 +4,32 @@ import { Simulation } from './sim.js';
 // Single-thread core: no SharedArrayBuffer / cross-origin-isolation needed,
 // so this works on plain static hosting (GitHub Pages). Swap to core-mt + a
 // COOP/COEP service worker for ~2-4x faster encodes (see README).
-const CORE_BASE = 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.10/dist/umd';
+const CORE_BASES = [
+  'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.10/dist/umd',
+  'https://unpkg.com/@ffmpeg/core@0.12.10/dist/umd', // fallback if jsdelivr is blocked
+];
 
 let ffmpeg = null;
 let cancelFlag = false;
 
 export function cancelRender(){ cancelFlag = true; }
+
+// The UMD <script> tags set window.FFmpegWASM / window.FFmpegUtil. If jsdelivr is
+// blocked, index.html's onerror retries from unpkg — which may still be in flight
+// when the user clicks export, so poll briefly before giving up.
+async function waitForGlobals(timeoutMs = 8000){
+  const start = performance.now();
+  while (!(window.FFmpegWASM && window.FFmpegUtil)){
+    if (performance.now() - start > timeoutMs){
+      const missing = [
+        window.FFmpegWASM ? null : 'FFmpegWASM (@ffmpeg/ffmpeg)',
+        window.FFmpegUtil ? null : 'FFmpegUtil (@ffmpeg/util)',
+      ].filter(Boolean).join(' and ');
+      throw new Error(`ffmpeg.wasm script didn't load: ${missing} missing. A network/extension may be blocking the CDN (jsdelivr & unpkg).`);
+    }
+    await new Promise(r => setTimeout(r, 100));
+  }
+}
 
 function canvasToJpeg(canvas, quality){
   return new Promise((resolve,reject)=>{
@@ -19,18 +39,24 @@ function canvasToJpeg(canvas, quality){
 
 async function loadFFmpeg(onLog){
   if (ffmpeg && ffmpeg.loaded) return ffmpeg;
-  if (!window.FFmpegWASM || !window.FFmpegUtil){
-    throw new Error('ffmpeg.wasm failed to load from CDN — check your connection.');
-  }
+  await waitForGlobals();
   const { FFmpeg } = window.FFmpegWASM;
   const { toBlobURL } = window.FFmpegUtil;
   ffmpeg = new FFmpeg();
   if (onLog) ffmpeg.on('log', ({ message }) => onLog(message));
-  await ffmpeg.load({
-    coreURL: await toBlobURL(`${CORE_BASE}/ffmpeg-core.js`, 'text/javascript'),
-    wasmURL: await toBlobURL(`${CORE_BASE}/ffmpeg-core.wasm`, 'application/wasm'),
-  });
-  return ffmpeg;
+
+  // Download the ~25 MB core, trying each CDN in turn.
+  let lastErr;
+  for (const base of CORE_BASES){
+    try {
+      await ffmpeg.load({
+        coreURL: await toBlobURL(`${base}/ffmpeg-core.js`, 'text/javascript'),
+        wasmURL: await toBlobURL(`${base}/ffmpeg-core.wasm`, 'application/wasm'),
+      });
+      return ffmpeg;
+    } catch (e){ lastErr = e; }
+  }
+  throw new Error(`Couldn't download the ffmpeg core from any CDN: ${lastErr?.message || lastErr}`);
 }
 
 /**

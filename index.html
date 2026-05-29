@@ -11,9 +11,17 @@
 <link rel="stylesheet" href="./css/styles.css">
 
 <!-- ffmpeg.wasm (single-thread core, UMD) loaded from CDN. Sets window.FFmpegWASM / window.FFmpegUtil.
-     Single-thread core needs no SharedArrayBuffer, so this works on plain GitHub Pages. -->
-<script src="https://cdn.jsdelivr.net/npm/@ffmpeg/util@0.12.2/dist/umd/index.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.15/dist/umd/ffmpeg.js"></script>
+     Single-thread core needs no SharedArrayBuffer, so this works on plain GitHub Pages.
+     If jsdelivr is unreachable/blocked, onerror retries the same file+version from unpkg. -->
+<script>
+  function ffmpegCdnFallback(el){
+    var s = document.createElement('script');
+    s.src = el.src.replace('https://cdn.jsdelivr.net/npm/', 'https://unpkg.com/');
+    document.head.appendChild(s);
+  }
+</script>
+<script src="https://cdn.jsdelivr.net/npm/@ffmpeg/util@0.12.2/dist/umd/index.js" onerror="ffmpegCdnFallback(this)"></script>
+<script src="https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.15/dist/umd/ffmpeg.js" onerror="ffmpegCdnFallback(this)"></script>
 </head>
 <body>
 <div class="app" id="app">
@@ -84,7 +92,7 @@
   </aside>
 </div>
 
-<footer class="build-version" id="buildVersion">build: __BUILD_VERSION__</footer>
+<footer class="build-version" id="buildVersion">build 5 · 2026-05-29 · ffmpeg-cdn-fallback</footer>
 
 <script type="module" src="./js/app.js"></script>
 </body>
