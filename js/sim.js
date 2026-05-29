@@ -92,36 +92,73 @@ export class Simulation {
 
   _rand(a,b){ return a + this.rng()*(b-a); }
 
-  // How much would a candidate photo (at cx,cy, size w×h, moving at vNew) be
-  // entangled with the photos already on screen, projected over its whole descent?
-  // Returns a cost in ~[0,1.3]: 0 = stays clear, higher = heavily/persistently
-  // overlapping some other photo. Because motion is deterministic (constant speed,
-  // fixed x), we can just march time forward and measure the overlap.
+  // Fraction of a victim rectangle (vx,vy,vw,vh) hidden by the UNION of the given
+  // movers that are drawn above it (m.z > minZ), at time t. Coarse point-sampled
+  // grid — exact union area is overkill for a placement heuristic.
+  _unionHiddenFrac(vx, vy, vw, vh, movers, t, minZ){
+    const G = 12;                              // 12×12 = 144 sample cells
+    const cw = vw / G, ch = vh / G;
+    let covered = 0;
+    for (let gy = 0; gy < G; gy++){
+      const ccy = vy + (gy + 0.5) * ch;
+      for (let gx = 0; gx < G; gx++){
+        const ccx = vx + (gx + 0.5) * cw;
+        for (let k = 0; k < movers.length; k++){
+          const m = movers[k];
+          if (m.z <= minZ) continue;           // only photos drawn on top can hide it
+          const my = m.y0 + m.v * t;
+          if (ccx >= m.x && ccx <= m.x + m.w && ccy >= my && ccy <= my + m.h){ covered++; break; }
+        }
+      }
+    }
+    return covered / (G * G);
+  }
+
+  // How buried would things get if this candidate (at cx,cy, size w×h, moving at
+  // vNew, occupying its own slot's z-order) joined the scene? Projects the whole
+  // descent forward (motion is deterministic) and measures, per "victim" photo,
+  // the fraction hidden by the UNION of everything drawn above it — so several
+  // photos that each cover a slice add up instead of being judged individually.
+  // Victims = the candidate itself (could be buried by photos above) plus any
+  // lower photos it would newly cover. Returns a cost ~[0,1.3]; lower is clearer.
   _overlapCost(self, cx, cy, w, h, vNew){
-    const SAMPLES = 16;
-    const HEAVY = COVER_HEAVY;                 // overlap fraction we call "covered"
-    const T = (LOGH + h) / Math.max(1, vNew);  // seconds until this photo exits
-    let worst = 0;
-    for (const o of this.particles){
+    const SAMPLES = 14;
+    const HEAVY = COVER_HEAVY;
+    const parts = this.particles;
+    const selfZ = parts.indexOf(self);
+    const T = (LOGH + h) / Math.max(1, vNew);
+
+    // Every live photo as a "mover" (x fixed, y0 + v·t over time), plus the
+    // candidate itself in its own z slot — used as the pool of potential coverers.
+    const movers = [];
+    for (let i = 0; i < parts.length; i++){
+      const o = parts[i];
       if (o === self || o.dead || o.w === undefined) continue;
-      // x never changes, so horizontal overlap is constant — if none, they can
-      // never cover each other, no matter the timing.
-      const ox = Math.min(cx + w, o.x + o.w) - Math.max(cx, o.x);
-      if (ox <= 0) continue;
-      const minArea = Math.min(w * h, o.w * o.h);
+      movers.push({ x:o.x, y0:o.y, w:o.w, h:o.h, v:o.speed, z:i });
+    }
+    movers.push({ x:cx, y0:cy, w, h, v:vNew, z:selfZ });
+
+    // Victims: the candidate, plus lower-z photos it horizontally overlaps (those
+    // are the only existing photos whose coverage the candidate can worsen).
+    const victims = [{ x:cx, y0:cy, w, h, v:vNew, z:selfZ }];
+    for (let i = 0; i < selfZ; i++){
+      const o = parts[i];
+      if (o.dead || o.w === undefined) continue;
+      if (Math.min(cx + w, o.x + o.w) - Math.max(cx, o.x) > 0){
+        victims.push({ x:o.x, y0:o.y, w:o.w, h:o.h, v:o.speed, z:i });
+      }
+    }
+
+    let worst = 0;
+    for (const vic of victims){
       let heavyHits = 0, sumFrac = 0;
       for (let s = 0; s < SAMPLES; s++){
         const t = T * s / (SAMPLES - 1);
-        const ny = cy + vNew * t;
-        const oy = o.y + o.speed * t;
-        const oy2 = Math.min(ny + h, oy + o.h) - Math.max(ny, oy); // vertical overlap
-        if (oy2 <= 0) continue;
-        const frac = (ox * oy2) / minArea;     // fraction of the smaller photo hidden
+        const vy = vic.y0 + vic.v * t;
+        const frac = this._unionHiddenFrac(vic.x, vy, vic.w, vic.h, movers, t, vic.z);
         sumFrac += frac;
         if (frac > HEAVY) heavyHits++;
       }
-      // mostly: time-fraction spent heavily covered; plus a nudge toward generally
-      // clearer spots via the average overlap.
       const cost = heavyHits / SAMPLES + 0.3 * (sumFrac / SAMPLES);
       if (cost > worst) worst = cost;
     }
