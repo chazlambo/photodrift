@@ -142,9 +142,21 @@ function renderThumbs(){
   host.innerHTML = '';
   images.forEach((im, i) => {
     const t = document.createElement('div');
-    t.className = 'thumb'; t.draggable = true; t.dataset.i = i;
-    t.innerHTML = `<img src="${im.src}" alt=""><span class="num">${i+1}</span>`;
-    t.addEventListener('dragstart', () => { dragIdx = i; t.classList.add('dragging'); });
+    t.className = 'thumb' + (im.featured ? ' featured' : ''); t.draggable = true; t.dataset.i = i;
+    t.innerHTML = `<img src="${im.src}" alt=""><span class="num">${i+1}</span>` +
+      `<button class="star${im.featured ? ' on' : ''}" title="Feature: always on top, large &amp; slow">★</button>`;
+    const star = t.querySelector('.star');
+    star.addEventListener('click', e => {
+      e.stopPropagation();
+      im.featured = !im.featured;
+      star.classList.toggle('on', im.featured);
+      t.classList.toggle('featured', im.featured);
+      sim.refresh();
+    });
+    t.addEventListener('dragstart', e => {
+      if (e.target.classList.contains('star')){ e.preventDefault(); return; } // let the star be clicked
+      dragIdx = i; t.classList.add('dragging');
+    });
     t.addEventListener('dragend',   () => { dragIdx = null; t.classList.remove('dragging'); document.querySelectorAll('.thumb.over').forEach(e=>e.classList.remove('over')); });
     t.addEventListener('dragover', e => { e.preventDefault(); t.classList.add('over'); });
     t.addEventListener('dragleave', () => t.classList.remove('over'));

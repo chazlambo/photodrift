@@ -5,6 +5,16 @@ import { LOGW, LOGH } from './config.js';
 // but with big photos + high density there may be no fully-clear spot to find.
 const COVER_HEAVY = 0.6;
 
+// When no clear spot exists, a photo may spawn at a slightly different speed so it
+// drifts apart from a same-speed neighbour instead of riding on top of it. These
+// are the speed multipliers tried during placement; 1 (unchanged) is preferred
+// unless a nudge measurably reduces coverage.
+const SPEED_NUDGES = [1, 0.85, 1.18];
+
+// "Featured" photos: drawn above everything, at the top of the size range, and
+// deliberately slow so they linger as hero shots. FEATURE_SLOW > 1 = longer on screen.
+const FEATURE_SLOW = 1.6;
+
 // Small seedable RNG so an export is reproducible.
 function mulberry32(a){
   return function(){
@@ -114,6 +124,10 @@ export class Simulation {
     return covered / (G * G);
   }
 
+  // Effective draw order: featured photos sit above every non-featured one (and
+  // keep slot order within each group), matching draw()'s two-pass render.
+  _zOf(p, i){ return p.featured ? this.particles.length + i : i; }
+
   // How buried would things get if this candidate (at cx,cy, size w×h, moving at
   // vNew, occupying its own slot's z-order) joined the scene? Projects the whole
   // descent forward (motion is deterministic) and measures, per "victim" photo,
@@ -125,7 +139,7 @@ export class Simulation {
     const SAMPLES = 14;
     const HEAVY = COVER_HEAVY;
     const parts = this.particles;
-    const selfZ = parts.indexOf(self);
+    const selfZ = self.featured ? parts.length + parts.indexOf(self) : parts.indexOf(self);
     const T = (LOGH + h) / Math.max(1, vNew);
 
     // Every live photo as a "mover" (x fixed, y0 + v·t over time), plus the
@@ -134,18 +148,19 @@ export class Simulation {
     for (let i = 0; i < parts.length; i++){
       const o = parts[i];
       if (o === self || o.dead || o.w === undefined) continue;
-      movers.push({ x:o.x, y0:o.y, w:o.w, h:o.h, v:o.speed, z:i });
+      movers.push({ x:o.x, y0:o.y, w:o.w, h:o.h, v:o.speed, z:this._zOf(o, i) });
     }
     movers.push({ x:cx, y0:cy, w, h, v:vNew, z:selfZ });
 
-    // Victims: the candidate, plus lower-z photos it horizontally overlaps (those
-    // are the only existing photos whose coverage the candidate can worsen).
+    // Victims: the candidate, plus photos drawn below it that it horizontally
+    // overlaps (the only existing photos whose coverage the candidate can worsen).
     const victims = [{ x:cx, y0:cy, w, h, v:vNew, z:selfZ }];
-    for (let i = 0; i < selfZ; i++){
+    for (let i = 0; i < parts.length; i++){
       const o = parts[i];
-      if (o.dead || o.w === undefined) continue;
+      if (o === self || o.dead || o.w === undefined) continue;
+      if (this._zOf(o, i) >= selfZ) continue;
       if (Math.min(cx + w, o.x + o.w) - Math.max(cx, o.x) > 0){
-        victims.push({ x:o.x, y0:o.y, w:o.w, h:o.h, v:o.speed, z:i });
+        victims.push({ x:o.x, y0:o.y, w:o.w, h:o.h, v:o.speed, z:this._zOf(o, i) });
       }
     }
 
@@ -165,40 +180,57 @@ export class Simulation {
     return worst;
   }
 
-  // best-candidate placement: try several spots, keep the one that stays clearest
-  // of the other photos across its entire travel (not just at spawn time).
-  _choosePos(self,w,h,randomY,vNew){
-    const P = this.P;
+  // Set a particle's size + base speed from its depth and whether it's featured.
+  // Featured photos ride at the top of the size range and move deliberately slowly.
+  _sizeAndSpeed(p){
+    const P = this.P, item = p.item;
+    const aspect = item.placeholder ? item.aspect : (item.w/item.h);
+    const lo = Math.min(P.minSize, P.maxSize), hi = Math.max(P.minSize, P.maxSize);
+    p.featured = !!item.featured;
+    const dEff = p.featured ? 1 : p.d;                      // featured = largest
+    p.h = LOGH * ((lo + (hi-lo)*dEff) / 100);
+    p.w = p.h * aspect;
+    const travel = LOGH + p.h;
+    p.speed = p.featured
+      ? travel / (P.timeOn * FEATURE_SLOW)                  // slow hero drift, no parallax
+      : (travel / P.timeOn) * (1 + (p.d-0.5)*1.6*P.depth);
+  }
+
+  // best-candidate placement: try several spots (and, for non-featured photos, a
+  // few speeds), keep the combo that stays clearest of the other photos across its
+  // whole travel — not just at spawn. Returns {x, y, speed}.
+  _choosePos(self, randomY){
+    const P = this.P, w = self.w, h = self.h, base = self.speed;
     const margin = LOGW*(1 - P.spread/100)/2;
     const xlo = Math.min(margin, LOGW - w - margin);
     const xhi = Math.max(margin, LOGW - w - margin);
-    let best = null, bestCost = Infinity;
+    const mults = self.featured ? [1] : SPEED_NUDGES;       // hero speed is fixed
+    let best = null, bestCost = Infinity, bestSpeed = base;
     for (let i=0;i<28;i++){
       const cx = this._rand(xlo, xhi);
       const cy = randomY ? this._rand(-h*0.5, LOGH - h*0.3) : -h - this._rand(0, h*0.4);
-      // small random tiebreak so equally-clear spots still vary naturally
-      const cost = this._overlapCost(self, cx, cy, w, h, vNew) + this._rand(0, 0.02);
-      if (cost < bestCost){ bestCost = cost; best = { x:cx, y:cy }; }
+      for (const m of mults){
+        const v = base * m;
+        // random tiebreak for natural variety + a small bias back toward unchanged
+        // speed, so we only nudge when it actually buys clearer placement.
+        const cost = this._overlapCost(self, cx, cy, w, h, v)
+                   + this._rand(0, 0.02) + 0.07*Math.abs(1 - m);
+        if (cost < bestCost){ bestCost = cost; best = { x:cx, y:cy }; bestSpeed = v; }
+      }
     }
-    return best || { x:this._rand(xlo,xhi), y: randomY ? this._rand(0,LOGH) : -h };
+    if (!best) return { x:this._rand(xlo,xhi), y: randomY ? this._rand(0,LOGH) : -h, speed: base };
+    return { x:best.x, y:best.y, speed: bestSpeed };
   }
 
   _spawn(p, randomY){
     const set = this.getSet();
     const idx = this._nextIndex();
     if (idx < 0){ p.dead = true; return; }
-    const item = set[idx];
-    const aspect = item.placeholder ? item.aspect : (item.w/item.h);
     const P = this.P;
-    const d = this.rng();                                   // 0 far .. 1 near
-    const lo = Math.min(P.minSize, P.maxSize), hi = Math.max(P.minSize, P.maxSize);
-    const h = LOGH * ((lo + (hi-lo)*d) / 100);
-    const w = h * aspect;
-    const travel = LOGH + h;
-    const speed = (travel / P.timeOn) * (1 + (d-0.5)*1.6*P.depth);
-    p.item = item; p.idx = idx; p.w = w; p.h = h; p.d = d; p.dead = false; p.speed = speed;
-    const pos = this._choosePos(p, w, h, randomY, speed);   // needs speed to project travel
-    p.x = pos.x; p.y = pos.y;
+    p.item = set[idx]; p.idx = idx; p.d = this.rng(); p.dead = false; // 0 far .. 1 near
+    this._sizeAndSpeed(p);                                  // sets w, h, featured, base speed
+    const pos = this._choosePos(p, randomY);
+    p.x = pos.x; p.y = pos.y; p.speed = pos.speed;          // speed may be nudged for placement
     p.opacityBase = P.imgOpacity / 100;
     p.tilt = P.tilt ? this._rand(-P.tilt, P.tilt) : 0;
   }
@@ -235,16 +267,13 @@ export class Simulation {
     while (this.particles.length > target){ this.particles.pop(); }
   }
 
-  // recompute geometry/speed of living particles from current params (keeps depth + position)
+  // recompute geometry/speed of living particles from current params + featured
+  // state (keeps depth + position). Used on slider changes and feature toggles.
   refresh(){
     const P = this.P;
     for (const p of this.particles){
       if (p.dead || !p.item) continue;
-      const aspect = p.item.placeholder ? p.item.aspect : (p.item.w/p.item.h);
-      const lo = Math.min(P.minSize,P.maxSize), hi = Math.max(P.minSize,P.maxSize);
-      p.h = LOGH * ((lo + (hi-lo)*p.d) / 100);
-      p.w = p.h * aspect;
-      p.speed = ((LOGH + p.h) / P.timeOn) * (1 + (p.d-0.5)*1.6*P.depth);
+      this._sizeAndSpeed(p);                               // re-applies size, speed, featured
       const margin = LOGW*(1 - P.spread/100)/2;
       const xlo = Math.min(margin, LOGW - p.w - margin), xhi = Math.max(margin, LOGW - p.w - margin);
       p.x = clamp(p.x, xlo, xhi);
@@ -284,48 +313,53 @@ export class Simulation {
     return this._grain;
   }
 
+  _drawParticle(ctx, p){
+    if (p.dead || p.opacity <= 0) return;
+    const P = this.P;
+    ctx.save();
+    ctx.globalAlpha = clamp(p.opacity, 0, 1);
+    ctx.translate(p.x + p.w/2, p.y + p.h/2);
+    if (p.tilt) ctx.rotate(p.tilt * Math.PI/180);
+
+    if (P.shadow > 0){
+      const sh = P.shadow/100;
+      ctx.save();
+      ctx.shadowColor = `rgba(0,0,0,${0.55*sh + 0.15})`;
+      ctx.shadowBlur = 70*sh;
+      ctx.shadowOffsetY = 28*sh;
+      roundRectPath(ctx, -p.w/2, -p.h/2, p.w, p.h, P.radius);
+      ctx.fillStyle = '#000';
+      ctx.fill();
+      ctx.restore();
+    }
+
+    roundRectPath(ctx, -p.w/2, -p.h/2, p.w, p.h, P.radius);
+    ctx.clip();
+    const item = p.item;
+    if (item.placeholder){
+      const grad = ctx.createLinearGradient(-p.w/2,-p.h/2,p.w/2,p.h/2);
+      grad.addColorStop(0, item.c[0]); grad.addColorStop(1, item.c[1]);
+      ctx.fillStyle = grad;
+      ctx.fillRect(-p.w/2,-p.h/2,p.w,p.h);
+      ctx.globalAlpha = clamp(p.opacity,0,1)*0.5;
+      ctx.fillStyle = '#fff';
+      ctx.font = `${Math.round(p.h*0.18)}px "DM Mono", monospace`;
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText(String(item.n).padStart(2,'0'), 0, 0);
+    } else if (item.imgEl){
+      drawCover(ctx, item.imgEl, -p.w/2, -p.h/2, p.w, p.h);
+    }
+    ctx.restore();
+  }
+
   draw(ctx){
     const P = this.P;
     ctx.fillStyle = P.bg;
     ctx.fillRect(0,0,LOGW,LOGH);
 
-    for (const p of this.particles){
-      if (p.dead || p.opacity <= 0) continue;
-      ctx.save();
-      ctx.globalAlpha = clamp(p.opacity, 0, 1);
-      ctx.translate(p.x + p.w/2, p.y + p.h/2);
-      if (p.tilt) ctx.rotate(p.tilt * Math.PI/180);
-
-      if (P.shadow > 0){
-        const sh = P.shadow/100;
-        ctx.save();
-        ctx.shadowColor = `rgba(0,0,0,${0.55*sh + 0.15})`;
-        ctx.shadowBlur = 70*sh;
-        ctx.shadowOffsetY = 28*sh;
-        roundRectPath(ctx, -p.w/2, -p.h/2, p.w, p.h, P.radius);
-        ctx.fillStyle = '#000';
-        ctx.fill();
-        ctx.restore();
-      }
-
-      roundRectPath(ctx, -p.w/2, -p.h/2, p.w, p.h, P.radius);
-      ctx.clip();
-      const item = p.item;
-      if (item.placeholder){
-        const grad = ctx.createLinearGradient(-p.w/2,-p.h/2,p.w/2,p.h/2);
-        grad.addColorStop(0, item.c[0]); grad.addColorStop(1, item.c[1]);
-        ctx.fillStyle = grad;
-        ctx.fillRect(-p.w/2,-p.h/2,p.w,p.h);
-        ctx.globalAlpha = clamp(p.opacity,0,1)*0.5;
-        ctx.fillStyle = '#fff';
-        ctx.font = `${Math.round(p.h*0.18)}px "DM Mono", monospace`;
-        ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-        ctx.fillText(String(item.n).padStart(2,'0'), 0, 0);
-      } else if (item.imgEl){
-        drawCover(ctx, item.imgEl, -p.w/2, -p.h/2, p.w, p.h);
-      }
-      ctx.restore();
-    }
+    // two passes so featured photos always render on top of the rest
+    for (const p of this.particles) if (!p.featured) this._drawParticle(ctx, p);
+    for (const p of this.particles) if (p.featured)  this._drawParticle(ctx, p);
 
     // subtle film grain
     ctx.save();
